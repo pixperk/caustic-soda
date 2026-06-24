@@ -105,3 +105,29 @@ func demoRepeatableRead() {
 	<-done         // wait until it has
 
 }
+
+// a dirty read is reading a value some other transaction wrote but never
+// committed. no concurrency needed to show it: a writes, b reads it, a aborts.
+// with the naive predicate (created_by <= snapshot, no committed check) b sees
+// a's "dirty" value, which never existed in any committed state.
+func demoDirtyRead() {
+	s := NewStore()
+
+	// genesis: a committed baseline so there is an "old" value to fall back to.
+	g := s.Begin()
+	g.Set("k", "old")
+	g.Commit()
+
+	// a writes a new value but does NOT commit.
+	a := s.Begin()
+	a.Set("k", "dirty")
+
+	// b reads while a is still uncommitted.
+	b := s.Begin()
+	read, _ := b.Get("k")
+
+	// a rolls back. the value b read never committed.
+	a.Abort()
+
+	fmt.Printf("dirty read: b read = %s (correct would be old; b saw a's uncommitted, later-aborted write)\n", read)
+}
