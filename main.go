@@ -93,7 +93,9 @@ func (s *Store) Begin() *Txn {
 }
 
 func main() {
+	demoLostUpdate()
 	demoNonRepeatableRread()
 	demoRepeatableRead()
 	demoDirtyRead()
+	demoLostUpdateTxn()
 }

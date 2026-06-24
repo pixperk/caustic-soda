@@ -139,3 +139,34 @@ func demoDirtyRead() {
 
 	fmt.Printf("dirty read: b read = %s \n", read)
 }
+
+// demoLostUpdateTxn shows that lost update STILL happens even with transactions,
+func demoLostUpdateTxn() {
+	store := NewStore()
+
+	// committed baseline: balance = 100.
+	g := store.Begin()
+	g.Set("balance", "100")
+	g.Commit()
+
+	// a and b both begin and read 100 from their own snapshots.
+	a := store.Begin()
+	av, _ := a.Get("balance")
+	abal, _ := strconv.Atoi(av) // a reads 100
+
+	b := store.Begin()
+	bv, _ := b.Get("balance")
+	bbal, _ := strconv.Atoi(bv) // b reads 100
+
+	// both write their +50 and commit. no conflict check, so both succeed.
+	a.Set("balance", strconv.Itoa(abal+50))
+	a.Commit() // writes 150
+
+	b.Set("balance", strconv.Itoa(bbal+50))
+	b.Commit() // writes 150 again, clobbering a's update
+
+	// read the final committed value.
+	r := store.Begin()
+	final, _ := r.Get("balance")
+	fmt.Printf("lost update (txn): final balance = %s (correct would be 200; one +50 was lost)\n", final)
+}
