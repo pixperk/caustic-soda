@@ -67,6 +67,17 @@ func (s *Store) Delete(keyStr string) {
 	s.storage[key] = append(s.storage[key], &ValueVersion{deleted: true, version: ts})
 }
 
+// returns a txn to read from the store
+// the txn will have a snapshot of the store at the time it was created
+func (s *Store) Begin() *Txn {
+	ts := atomic.AddInt64(&globalTS, 1)
+	return &Txn{
+		ID:       ts,
+		Snapshot: ts,
+		store:    s,
+	}
+}
+
 func main() {
 	demoNonRepeatableRread()
 }
