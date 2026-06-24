@@ -35,7 +35,7 @@ func (txn *Txn) Get(k string) (string, bool) {
 	}
 
 	for i := len(value) - 1; i >= 0; i-- {
-		if value[i].created_by <= txn.Snapshot {
+		if txn.visible(value[i]) {
 			if value[i].deleted {
 				return "", false
 			}
@@ -71,4 +71,25 @@ func (txn *Txn) Abort() {
 		return
 	}
 	txn.State = Aborted
+}
+
+func (txn *Txn) visible(v *ValueVersion) bool {
+	//if i am the transaction that created this version, i can see it
+	if v.created_by == txn.ID {
+		return true
+	}
+
+	writer, ok := txn.store.txns[v.created_by]
+	if !ok {
+		//this should never happen, but if it does, we will treat it as not visible
+		return false
+	}
+
+	//if the writer is not committed, this version is not visible
+	if writer == nil || writer.State != Committed {
+		return false
+	}
+
+	//only if the writer committed before my snapshot can i see this version
+	return writer.CommitTS <= txn.Snapshot
 }

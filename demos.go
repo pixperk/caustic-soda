@@ -81,35 +81,43 @@ func demoNonRepeatableRread() {
 //	same value when repeated in the same transaction.
 func demoRepeatableRead() {
 	store := NewStore()
-	store.Set("k", "v1")
+
+	// committed baseline so there is a v1 to read.
+	g := store.Begin()
+	g.Set("k", "v1")
+	g.Commit()
 
 	gate := NewGate()
 	done := make(chan struct{})
 
-	//start a transaction
+	//start a transaction (snapshot is frozen here, after g committed)
 	txn := store.Begin()
 	//first read
 	first, _ := txn.Get("k")
 
-	// a's pending read, fired only after b writes.
+	// a's pending second read, fired only after b writes.
 	go func() {
-		gate.Wait() // wait until b has written v2
+		gate.Wait() // wait until b has committed v2
 		second, _ := txn.Get("k")
 		fmt.Printf("repeatable read: first read = %s, second read = %s (correct would be v1; the value did not change)\n", first, second)
 		close(done)
 	}()
 
-	//b writes v2
-	store.Set("k", "v2")
+	//b writes v2 and commits, with a commitTS after a's snapshot
+	b := store.Begin()
+	b.Set("k", "v2")
+	b.Commit()
+
 	gate.Release() // let a's second read happen
 	<-done         // wait until it has
-
 }
 
 // a dirty read is reading a value some other transaction wrote but never
 // committed. no concurrency needed to show it: a writes, b reads it, a aborts.
 // with the naive predicate (created_by <= snapshot, no committed check) b sees
 // a's "dirty" value, which never existed in any committed state.
+
+// now fixed
 func demoDirtyRead() {
 	s := NewStore()
 
@@ -129,5 +137,5 @@ func demoDirtyRead() {
 	// a rolls back. the value b read never committed.
 	a.Abort()
 
-	fmt.Printf("dirty read: b read = %s (correct would be old; b saw a's uncommitted, later-aborted write)\n", read)
+	fmt.Printf("dirty read: b read = %s \n", read)
 }
