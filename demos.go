@@ -18,7 +18,7 @@ func demoLostUpdate() {
 	store := NewStore()
 	store.Set("balance", "100") // start at 100
 
-	gate := NewGate()         // holds a's write until b has written
+	gate := NewGate()           // holds a's write until b has written
 	done := make(chan struct{}) // closed once a's write has landed
 
 	// client a read 100 earlier and is holding that stale value.
@@ -27,7 +27,7 @@ func demoLostUpdate() {
 
 	// a's pending write, fired only after b writes.
 	go func() {
-		gate.Wait()                            // wait until b has written 150
+		gate.Wait()                              // wait until b has written 150
 		store.Set("balance", strconv.Itoa(a+50)) // a writes its stale 100+50, clobbering b
 		close(done)
 	}()
@@ -43,4 +43,34 @@ func demoLostUpdate() {
 	// expected: 150. b's +50 was lost.
 	final, _ := store.Get("balance")
 	fmt.Printf("lost update: final balance = %s (correct would be 200; one +50 was lost)\n", final)
+}
+
+// a non repeatable
+// read is a read that returns different values when repeated in the same transaction.
+// this demo shows how a naive store can
+// return different values for the same key in the same transaction, violating repeatable reads.
+func demoNonRepeatableRread() {
+	store := NewStore()
+	store.Set("k", "v1")
+
+	gate := NewGate()
+	done := make(chan struct{})
+
+	//first read
+	first, _ := store.Get("k")
+
+	// a's pending read, fired only after b writes.
+	go func() {
+		gate.Wait() // wait until b has written v2
+		second, _ := store.Get("k")
+		fmt.Printf("non repeatable read: first read = %s, second read = %s (correct would be v1; the value changed)\n", first, second)
+		close(done)
+	}()
+
+	//b writes v2
+	store.Set("k", "v2")
+
+	gate.Release() // let a's second read happen
+	<-done         // wait until it has
+
 }
