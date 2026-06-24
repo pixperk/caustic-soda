@@ -79,5 +79,5 @@ func (s *Store) Begin() *Txn {
 }
 
 func main() {
-	demoNonRepeatableRread()
+	demoRepeatableRead()
 }

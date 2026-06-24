@@ -74,3 +74,34 @@ func demoNonRepeatableRread() {
 	<-done         // wait until it has
 
 }
+
+// fixed by using transactions and snapshots,
+// a repeatable read is a read that returns the
+//
+//	same value when repeated in the same transaction.
+func demoRepeatableRead() {
+	store := NewStore()
+	store.Set("k", "v1")
+
+	gate := NewGate()
+	done := make(chan struct{})
+
+	//start a transaction
+	txn := store.Begin()
+	//first read
+	first, _ := txn.Get("k")
+
+	// a's pending read, fired only after b writes.
+	go func() {
+		gate.Wait() // wait until b has written v2
+		second, _ := txn.Get("k")
+		fmt.Printf("repeatable read: first read = %s, second read = %s (correct would be v1; the value did not change)\n", first, second)
+		close(done)
+	}()
+
+	//b writes v2
+	store.Set("k", "v2")
+	gate.Release() // let a's second read happen
+	<-done         // wait until it has
+
+}
