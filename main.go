@@ -14,6 +14,8 @@ type Store struct {
 	storageMu sync.Mutex
 	storage   map[Key]Value
 	txns      map[int64]*Txn // all transactions, indexed by their ID
+	//map from the key to all the txn ids that have read it
+	siReads map[Key][]int64
 }
 
 type Key string
@@ -30,6 +32,7 @@ func NewStore() *Store {
 	return &Store{
 		storage: make(map[Key]Value),
 		txns:    make(map[int64]*Txn),
+		siReads: make(map[Key][]int64),
 	}
 }
 
@@ -80,11 +83,13 @@ func (s *Store) Delete(keyStr string) {
 func (s *Store) Begin() *Txn {
 	ts := atomic.AddInt64(&globalTS, 1)
 	txn := &Txn{
-		ID:       ts,
-		Snapshot: ts,
-		store:    s,
-		State:    Active,
-		writes:   make(map[Key]string),
+		ID:          ts,
+		Snapshot:    ts,
+		store:       s,
+		State:       Active,
+		writes:      make(map[Key]string),
+		inConflict:  false,
+		outConflict: false,
 	}
 
 	s.storageMu.Lock()

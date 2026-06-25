@@ -33,8 +33,11 @@ type Txn struct {
 	//when did this transaction commit, if it did
 	//if it didn't commit, this will be 0
 	CommitTS int64
-
+	//map for buffered writes, so we don't write to the store until commit
 	writes map[Key]string
+	//bools for checking txn A -rw-> txnPivot -rw-> txnB conflicts
+	inConflict  bool
+	outConflict bool
 }
 
 func (txn *Txn) Get(k string) (string, bool) {
@@ -49,6 +52,10 @@ func (txn *Txn) Get(k string) (string, bool) {
 
 	txn.store.storageMu.Lock()
 	defer txn.store.storageMu.Unlock()
+
+	//read attemp : gotta add to siReads map
+	//notice how we don't append OUR buffer writes to the store until commit, so we don't have to worry about that here
+	txn.store.siReads[key] = append(txn.store.siReads[key], txn.ID)
 
 	value, ok := txn.store.storage[key]
 	if !ok || len(value) == 0 {
