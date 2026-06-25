@@ -99,4 +99,5 @@ func main() {
 	demoRepeatableRead()
 	demoDirtyRead()
 	demoLostUpdateTxn()
+	demoWriteSkew()
 }

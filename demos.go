@@ -183,3 +183,39 @@ func demoLostUpdateTxn() {
 	final, _ := r.Get("balance")
 	fmt.Printf("lost update (txn): final balance = %s (correct 200; first-committer-wins + retry)\n", final)
 }
+
+func demoWriteSkew() {
+	s := NewStore()
+	g := s.Begin()
+	g.Set("alice", "on_call")
+	g.Set("bob", "on_call")
+	_ = g.Commit()
+
+	// alice and bob are both on call.
+	// they both want to go off call, but at least one must stay on call.
+
+	a := s.Begin()
+	av, _ := a.Get("alice")
+	bv, _ := a.Get("bob")
+
+	if av == "on_call" && bv == "on_call" {
+		a.Set("alice", "off_call")
+	}
+
+	b := s.Begin()
+	av2, _ := b.Get("alice")
+	bv2, _ := b.Get("bob")
+
+	if av2 == "on_call" && bv2 == "on_call" {
+		b.Set("bob", "off_call")
+	}
+
+	_ = a.Commit()
+	_ = b.Commit()
+
+	// now both alice and bob are off call, violating the constraint.
+	r := s.Begin()
+	finalAlice, _ := r.Get("alice")
+	finalBob, _ := r.Get("bob")
+	fmt.Printf("write skew: final state = alice: %s, bob: %s (both off call; constraint violated)\n", finalAlice, finalBob)
+}
