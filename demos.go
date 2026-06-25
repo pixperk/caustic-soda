@@ -85,7 +85,7 @@ func demoRepeatableRead() {
 	// committed baseline so there is a v1 to read.
 	g := store.Begin()
 	g.Set("k", "v1")
-	g.Commit()
+	_ = g.Commit()
 
 	gate := NewGate()
 	done := make(chan struct{})
@@ -106,7 +106,7 @@ func demoRepeatableRead() {
 	//b writes v2 and commits, with a commitTS after a's snapshot
 	b := store.Begin()
 	b.Set("k", "v2")
-	b.Commit()
+	_ = b.Commit()
 
 	gate.Release() // let a's second read happen
 	<-done         // wait until it has
@@ -124,7 +124,7 @@ func demoDirtyRead() {
 	// genesis: a committed baseline so there is an "old" value to fall back to.
 	g := s.Begin()
 	g.Set("k", "old")
-	g.Commit()
+	_ = g.Commit()
 
 	// a writes a new value but does NOT commit.
 	a := s.Begin()
@@ -140,14 +140,17 @@ func demoDirtyRead() {
 	fmt.Printf("dirty read: b read = %s \n", read)
 }
 
-// demoLostUpdateTxn shows that lost update STILL happens even with transactions,
+// demoLostUpdateTxn shows first-committer-wins killing the lost update. a and b
+// both read 100. a commits 150. b's commit hits a write-write conflict (a committed
+// to the same key after b's snapshot) and is rejected, so b cannot clobber a. b then
+// retries on fresh data (reads 150) and reaches the correct 200.
 func demoLostUpdateTxn() {
 	store := NewStore()
 
 	// committed baseline: balance = 100.
 	g := store.Begin()
 	g.Set("balance", "100")
-	g.Commit()
+	_ = g.Commit()
 
 	// a and b both begin and read 100 from their own snapshots.
 	a := store.Begin()
@@ -158,15 +161,25 @@ func demoLostUpdateTxn() {
 	bv, _ := b.Get("balance")
 	bbal, _ := strconv.Atoi(bv) // b reads 100
 
-	// both write their +50 and commit. no conflict check, so both succeed.
+	// a writes its +50 and commits first, it wins.
 	a.Set("balance", strconv.Itoa(abal+50))
-	a.Commit() // writes 150
+	_ = a.Commit() // writes 150
 
+	// b writes its +50 and tries to commit, first-committer-wins rejects it.
 	b.Set("balance", strconv.Itoa(bbal+50))
-	b.Commit() // writes 150 again, clobbering a's update
+	if err := b.Commit(); err != nil {
+		fmt.Printf("lost update (txn): b rejected on commit: %v (no silent clobber)\n", err)
+
+		// b retries on fresh data: re-read, recompute, commit.
+		b2 := store.Begin()
+		v, _ := b2.Get("balance")
+		bal, _ := strconv.Atoi(v) // now reads 150
+		b2.Set("balance", strconv.Itoa(bal+50))
+		_ = b2.Commit() // writes 200
+	}
 
 	// read the final committed value.
 	r := store.Begin()
 	final, _ := r.Get("balance")
-	fmt.Printf("lost update (txn): final balance = %s (correct would be 200; one +50 was lost)\n", final)
+	fmt.Printf("lost update (txn): final balance = %s (correct 200; first-committer-wins + retry)\n", final)
 }

@@ -84,6 +84,7 @@ func (s *Store) Begin() *Txn {
 		Snapshot: ts,
 		store:    s,
 		State:    Active,
+		writes:   make(map[Key]string),
 	}
 
 	s.storageMu.Lock()

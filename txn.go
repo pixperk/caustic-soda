@@ -1,6 +1,16 @@
 package main
 
-import "sync/atomic"
+import (
+	"fmt"
+	"sync/atomic"
+)
+
+const (
+	ErrorTxnNotActive      = "transaction is not active"
+	ErrWriteWriteConflict  = "write-write conflict"
+	ErrAlreadyCommitted    = "transaction is already committed"
+	ErrorTxnAlreadyAborted = "transaction is already aborted"
+)
 
 // txn state enum
 type TxnState int
@@ -23,12 +33,23 @@ type Txn struct {
 	//when did this transaction commit, if it did
 	//if it didn't commit, this will be 0
 	CommitTS int64
+
+	writes map[Key]string
 }
 
 func (txn *Txn) Get(k string) (string, bool) {
+	key := Key(k)
+
+	//read own buffer first, if we have a write for this key, return it
+	if v, ok := txn.writes[key]; ok {
+		return v, true
+	}
+
+	//otherwise, find the newest version that is visible to this transaction
+
 	txn.store.storageMu.Lock()
 	defer txn.store.storageMu.Unlock()
-	key := Key(k)
+
 	value, ok := txn.store.storage[key]
 	if !ok || len(value) == 0 {
 		return "", false
@@ -47,21 +68,56 @@ func (txn *Txn) Get(k string) (string, bool) {
 }
 
 func (txn *Txn) Set(k, v string) {
-	txn.store.storageMu.Lock()
-	defer txn.store.storageMu.Unlock()
 	key := Key(k)
-	//version is renamed to created_by to reflect that it is the transaction that created this version, not a global timestamp
-	txn.store.storage[key] = append(txn.store.storage[key], &ValueVersion{value: v, created_by: txn.ID})
+	//we just record the write in the txns buffer,
+	// we don't actually write to the store until commit
+	txn.writes[key] = v
 }
 
-func (txn *Txn) Commit() {
+func (txn *Txn) Commit() error {
 	txn.store.storageMu.Lock()
 	defer txn.store.storageMu.Unlock()
 	if txn.State != Active {
-		return
+		return fmt.Errorf(ErrorTxnNotActive)
 	}
-	txn.State = Committed
+
+	//conflict check
+	//for each key we wrote,
+	// check if there is a newer version that was committed after our snapshot
+
+	for k := range txn.writes {
+		//scan the versions for this key
+		versions, ok := txn.store.storage[k]
+		if !ok {
+			continue
+		}
+		//check each version to see
+		// if it was created by a committed transaction after our snapshot
+		for i := len(versions) - 1; i >= 0; i-- {
+			v := versions[i]
+			if v.created_by == txn.ID {
+				continue
+			}
+			writer, ok := txn.store.txns[v.created_by]
+			if !ok {
+				continue
+			}
+			//if yes, this is a write-write conflict, abort the transaction
+			if writer.State == Committed && writer.CommitTS > txn.Snapshot {
+				txn.State = Aborted
+				return fmt.Errorf(ErrWriteWriteConflict)
+			}
+
+		}
+	}
+
+	//no conflict found, write our buffered writes to the store
+	for k, v := range txn.writes {
+		txn.store.storage[k] = append(txn.store.storage[k], &ValueVersion{value: v, created_by: txn.ID})
+	}
 	txn.CommitTS = atomic.AddInt64(&globalTS, 1)
+	txn.State = Committed
+	return nil
 }
 
 func (txn *Txn) Abort() {
