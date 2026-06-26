@@ -10,6 +10,7 @@ const (
 	ErrWriteWriteConflict  = "write-write conflict"
 	ErrAlreadyCommitted    = "transaction is already committed"
 	ErrorTxnAlreadyAborted = "transaction is already aborted"
+	ErrSSIConflict         = "transaction aborted due to SSI conflict : dangerous structure (txnA -rw-> txnPivot -rw-> txnB) detected"
 )
 
 // txn state enum
@@ -88,36 +89,16 @@ func (txn *Txn) Commit() error {
 		return fmt.Errorf(ErrorTxnNotActive)
 	}
 
-	//conflict check
-	//for each key we wrote,
-	// check if there is a newer version that was committed after our snapshot
-
-	for k := range txn.writes {
-		//scan the versions for this key
-		versions, ok := txn.store.storage[k]
-		if !ok {
-			continue
-		}
-		//check each version to see
-		// if it was created by a committed transaction after our snapshot
-		for i := len(versions) - 1; i >= 0; i-- {
-			v := versions[i]
-			if v.created_by == txn.ID {
-				continue
-			}
-			writer, ok := txn.store.txns[v.created_by]
-			if !ok {
-				continue
-			}
-			//if yes, this is a write-write conflict, abort the transaction
-			if writer.State == Committed && writer.CommitTS > txn.Snapshot {
-				txn.State = Aborted
-				return fmt.Errorf(ErrWriteWriteConflict)
-			}
-
-		}
+	if err := txn.errOnWriteWriteConflict(); err != nil {
+		return err
 	}
 
+	//set the conflict flags for this transaction and any other transactions that have read the keys we wrote
+	txn.setConflictFlags()
+
+	if err := txn.errOnSSIConflict(); err != nil {
+		return err
+	}
 	//no conflict found, write our buffered writes to the store
 	for k, v := range txn.writes {
 		txn.store.storage[k] = append(txn.store.storage[k], &ValueVersion{value: v, created_by: txn.ID})
@@ -155,4 +136,62 @@ func (txn *Txn) visible(v *ValueVersion) bool {
 
 	//only if the writer committed before my snapshot can i see this version
 	return writer.CommitTS <= txn.Snapshot
+}
+
+// conflict check
+// for each key we wrote,
+// check if there is a newer version that was committed after our snapshot
+func (txn *Txn) errOnWriteWriteConflict() error {
+	for k := range txn.writes {
+		//scan the versions for this key
+		versions, ok := txn.store.storage[k]
+		if !ok {
+			continue
+		}
+		//check each version to see
+		// if it was created by a committed transaction after our snapshot
+		for i := len(versions) - 1; i >= 0; i-- {
+			v := versions[i]
+			if v.created_by == txn.ID {
+				continue
+			}
+			writer, ok := txn.store.txns[v.created_by]
+			if !ok {
+				continue
+			}
+			//if yes, this is a write-write conflict, abort the transaction
+			if writer.State == Committed && writer.CommitTS > txn.Snapshot {
+				txn.State = Aborted
+				return fmt.Errorf(ErrWriteWriteConflict)
+			}
+
+		}
+	}
+
+	return nil
+}
+
+func (txn *Txn) setConflictFlags() {
+	for k := range txn.writes {
+		for _, readerID := range txn.store.siReads[k] {
+			if readerID == txn.ID {
+				continue
+			}
+			if txn.store.concurrent(readerID, txn.ID) {
+				reader := txn.store.txns[readerID]
+				reader.outConflict = true
+				txn.inConflict = true
+			}
+
+		}
+	}
+}
+
+func (txn *Txn) errOnSSIConflict() error {
+	if txn.store.checkPivot(txn) {
+		txn.State = Aborted
+		return fmt.Errorf(ErrSSIConflict)
+	}
+
+	return nil
 }

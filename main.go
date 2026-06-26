@@ -98,6 +98,28 @@ func (s *Store) Begin() *Txn {
 	return txn
 }
 
+// two transactions are concurrent if their lifetimes overlap, that means
+// txn1 started before txn2 committed AND txn2 started before txn1 committed.
+// equivalently: they are NOT concurrent only if one finished before the other began.
+func (s *Store) concurrent(id1, id2 int64) bool {
+	txn1 := s.txns[id1]
+	txn2 := s.txns[id2]
+	if txn1 == nil || txn2 == nil {
+		return false
+	}
+
+	// CommitTS == 0 means not committed yet, so that side is still live and
+	// cannot have ended before the other began.
+	txn1EndedBeforeTxn2 := txn1.CommitTS != 0 && txn1.CommitTS <= txn2.Snapshot
+	txn2EndedBeforeTxn1 := txn2.CommitTS != 0 && txn2.CommitTS <= txn1.Snapshot
+
+	return !(txn1EndedBeforeTxn2 || txn2EndedBeforeTxn1)
+}
+
+func (s *Store) checkPivot(txn *Txn) bool {
+	return txn.inConflict && txn.outConflict
+}
+
 func main() {
 	demoLostUpdate()
 	demoNonRepeatableRread()
@@ -105,4 +127,5 @@ func main() {
 	demoDirtyRead()
 	demoLostUpdateTxn()
 	demoWriteSkew()
+	demoWriteSkewReadAfterWrite()
 }

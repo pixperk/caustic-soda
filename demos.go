@@ -210,12 +210,57 @@ func demoWriteSkew() {
 		b.Set("bob", "off_call")
 	}
 
-	_ = a.Commit()
-	_ = b.Commit()
+	if err := a.Commit(); err != nil {
+		fmt.Printf("write skew: a failed to commit: %v\n", err)
+	}
+	if err := b.Commit(); err != nil {
+		fmt.Printf("write skew: b failed to commit: %v\n", err)
+	}
 
 	// now both alice and bob are off call, violating the constraint.
 	r := s.Begin()
 	finalAlice, _ := r.Get("alice")
 	finalBob, _ := r.Get("bob")
-	fmt.Printf("write skew: final state = alice: %s, bob: %s (both off call; constraint violated)\n", finalAlice, finalBob)
+	fmt.Printf("write skew: final state = alice: %s, bob: %s\n", finalAlice, finalBob)
+}
+
+// demoWriteSkewReadAfterWrite shows a write skew our detection STILL misses,
+// because the edge b->rw a is born at b's READ (after a already committed), and
+// we only run detection point 2 (on write). b begins concurrent with a but reads
+// after a commits, so a's write to alice was never seen as a conflict.
+func demoWriteSkewReadAfterWrite() {
+	s := NewStore()
+	g := s.Begin()
+	g.Set("alice", "on_call")
+	g.Set("bob", "on_call")
+	_ = g.Commit()
+
+	// both begin and are concurrent (b's snapshot is frozen before a commits).
+	a := s.Begin()
+	b := s.Begin()
+
+	// a reads both, writes alice, commits first.
+	av, _ := a.Get("alice")
+	bv, _ := a.Get("bob")
+	if av == "on_call" && bv == "on_call" {
+		a.Set("alice", "off_call")
+	}
+	if err := a.Commit(); err != nil {
+		fmt.Printf("write skew (raw): a failed to commit: %v\n", err)
+	}
+
+	// b reads AFTER a committed, but sees old on_call via its older snapshot.
+	av2, _ := b.Get("alice")
+	bv2, _ := b.Get("bob")
+	if av2 == "on_call" && bv2 == "on_call" {
+		b.Set("bob", "off_call")
+	}
+	if err := b.Commit(); err != nil {
+		fmt.Printf("write skew (raw): b failed to commit: %v\n", err)
+	}
+
+	r := s.Begin()
+	finalAlice, _ := r.Get("alice")
+	finalBob, _ := r.Get("bob")
+	fmt.Printf("write skew (read-after-write): final state = alice: %s, bob: %s\n", finalAlice, finalBob)
 }
