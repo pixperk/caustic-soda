@@ -83,13 +83,16 @@ func (s *Store) Delete(keyStr string) {
 func (s *Store) Begin() *Txn {
 	ts := atomic.AddInt64(&globalTS, 1)
 	txn := &Txn{
-		ID:          ts,
-		Snapshot:    ts,
-		store:       s,
-		State:       Active,
-		writes:      make(map[Key]string),
-		inConflict:  false,
-		outConflict: false,
+		ID:             ts,
+		Snapshot:       ts,
+		store:          s,
+		State:          Active,
+		writes:         make(map[Key]string),
+		inConflict:     false,
+		outConflict:    false,
+		inConflictFrom: []int64{},
+		outConflictTo:  []int64{},
+		markedForAbort: false,
 	}
 
 	s.storageMu.Lock()
@@ -116,16 +119,33 @@ func (s *Store) concurrent(id1, id2 int64) bool {
 	return !(txn1EndedBeforeTxn2 || txn2EndedBeforeTxn1)
 }
 
-func (s *Store) checkPivot(txn *Txn) bool {
-	return txn.inConflict && txn.outConflict
+func (s *Store) checkAndMark(txn *Txn) {
+	if txn.inConflict && txn.outConflict {
+		s.markForAbort(txn)
+	}
+}
+
+func (s *Store) markForAbort(pivot *Txn) {
+	//prefer the pivot if it is still active
+	if pivot.State == Active {
+		pivot.markedForAbort = true
+		return
+	}
+
+	//pivot already committed
+	//we choose an adjacent transaction to abort
+	for _, id := range append(pivot.inConflictFrom, pivot.outConflictTo...) {
+		adj := s.txns[id]
+		if adj != nil && adj.State == Active {
+			adj.markedForAbort = true
+			return
+		}
+	}
+
+	// if every neighbor is also committed, the structure was already broken
+	// by an earlier abort (or it's a false-positive remnant). nothing to do.
 }
 
 func main() {
-	demoLostUpdate()
-	demoNonRepeatableRread()
-	demoRepeatableRead()
-	demoDirtyRead()
-	demoLostUpdateTxn()
-	demoWriteSkew()
-	demoWriteSkewReadAfterWrite()
+	demoWriteSkewSafeRetry()
 }

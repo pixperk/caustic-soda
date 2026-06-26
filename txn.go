@@ -39,6 +39,11 @@ type Txn struct {
 	//bools for checking txn A -rw-> txnPivot -rw-> txnB conflicts
 	inConflict  bool
 	outConflict bool
+
+	//these lists are for choosing the victim to abort.
+	inConflictFrom []int64 //txns with an edge to this txn (txn -rw-> this)
+	outConflictTo  []int64 //txns with an edge from this txn (this -rw-> txn)
+	markedForAbort bool
 }
 
 func (txn *Txn) Get(k string) (string, bool) {
@@ -99,7 +104,7 @@ func (txn *Txn) Commit() error {
 	}
 
 	//set the conflict flags for this transaction and any other transactions that have read the keys we wrote
-	txn.setConflictFlags()
+	txn.setWriteConflictFlags()
 
 	if err := txn.errOnSSIConflict(); err != nil {
 		return err
@@ -176,7 +181,7 @@ func (txn *Txn) errOnWriteWriteConflict() error {
 	return nil
 }
 
-func (txn *Txn) setConflictFlags() {
+func (txn *Txn) setWriteConflictFlags() {
 	for k := range txn.writes {
 		for _, readerID := range txn.store.siReads[k] {
 			if readerID == txn.ID {
@@ -185,7 +190,14 @@ func (txn *Txn) setConflictFlags() {
 			if txn.store.concurrent(readerID, txn.ID) {
 				reader := txn.store.txns[readerID]
 				reader.outConflict = true
+				//append to outconflict
+				reader.outConflictTo = append(reader.outConflictTo, txn.ID)
 				txn.inConflict = true
+				//append to inconflict
+				txn.inConflictFrom = append(txn.inConflictFrom, readerID)
+				//any of them could be the pivot.
+				txn.store.checkAndMark(reader)
+				txn.store.checkAndMark(txn)
 			}
 
 		}
@@ -193,7 +205,7 @@ func (txn *Txn) setConflictFlags() {
 }
 
 func (txn *Txn) errOnSSIConflict() error {
-	if txn.store.checkPivot(txn) {
+	if txn.markedForAbort {
 		txn.State = Aborted
 		return fmt.Errorf(ErrSSIConflict)
 	}
@@ -219,7 +231,11 @@ func (txn *Txn) setReadConflictFlags(versions Value) {
 		}
 		if writer.CommitTS > txn.Snapshot {
 			txn.outConflict = true
+			txn.outConflictTo = append(txn.outConflictTo, writer.ID)
 			writer.inConflict = true
+			writer.inConflictFrom = append(writer.inConflictFrom, txn.ID)
+			txn.store.checkAndMark(txn)
+			txn.store.checkAndMark(writer)
 		}
 	}
 }

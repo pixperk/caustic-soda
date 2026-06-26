@@ -264,3 +264,51 @@ func demoWriteSkewReadAfterWrite() {
 	finalBob, _ := r.Get("bob")
 	fmt.Printf("write skew (read-after-write): final state = alice: %s, bob: %s\n", finalAlice, finalBob)
 }
+
+// demoWriteSkewSafeRetry shows the payoff of safe retry: the loser doesn't just
+// abort, it retries until it makes progress. a wins and commits first. b's first
+// attempt is concurrent with a, hits the SSI conflict, and aborts. b then retries
+// with a fresh transaction that begins AFTER a committed, so it is no longer
+// concurrent with a, sees alice already off_call, correctly leaves bob on_call,
+// and commits. the retry cannot reproduce the conflict, so it converges.
+func demoWriteSkewSafeRetry() {
+	s := NewStore()
+	g := s.Begin()
+	g.Set("alice", "on_call")
+	g.Set("bob", "on_call")
+	_ = g.Commit()
+
+	// a and b both begin concurrently.
+	a := s.Begin()
+	b := s.Begin()
+
+	// a takes alice off call and commits first, it wins.
+	av, _ := a.Get("alice")
+	bv, _ := a.Get("bob")
+	if av == "on_call" && bv == "on_call" {
+		a.Set("alice", "off_call")
+	}
+	_ = a.Commit()
+
+	// b retries until it commits.
+	attempt := 1
+	for {
+		alice, _ := b.Get("alice")
+		bob, _ := b.Get("bob")
+		if alice == "on_call" && bob == "on_call" {
+			b.Set("bob", "off_call")
+		}
+		if err := b.Commit(); err == nil {
+			break // success, b made progress
+		} else {
+			fmt.Printf("write skew (safe retry): attempt %d aborted: %v\n", attempt, err)
+		}
+		attempt++
+		b = s.Begin() // fresh transaction, now begins after a committed
+	}
+
+	r := s.Begin()
+	finalAlice, _ := r.Get("alice")
+	finalBob, _ := r.Get("bob")
+	fmt.Printf("write skew (safe retry): b committed on attempt %d, final state = alice: %s, bob: %s\n", attempt, finalAlice, finalBob)
+}
