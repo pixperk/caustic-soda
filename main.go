@@ -148,4 +148,5 @@ func (s *Store) markForAbort(pivot *Txn) {
 
 func main() {
 	demoWriteSkewSafeRetry()
+	demoGC()
 }

@@ -312,3 +312,52 @@ func demoWriteSkewSafeRetry() {
 	finalBob, _ := r.Get("bob")
 	fmt.Printf("write skew (safe retry): b committed on attempt %d, final state = alice: %s, bob: %s\n", attempt, finalAlice, finalBob)
 }
+
+// demoGC shows GC reclaiming a shadowed version while refusing to collect the
+// version a long-running reader still needs.
+//
+// we commit v0 then v1, then start a long reader whose snapshot sits on v1.
+// more writers commit v2 and v3 (invisible to the reader). GC then drops v0
+// (shadowed by v1 below the cutoff) but keeps v1 (the reader's floor), so the
+// long reader can still read its consistent value after GC.
+func demoGC() {
+	s := NewStore()
+
+	// two committed versions before the long reader begins.
+	g0 := s.Begin()
+	g0.Set("x", "v0")
+	_ = g0.Commit()
+
+	g1 := s.Begin()
+	g1.Set("x", "v1")
+	_ = g1.Commit()
+
+	// the long reader: its snapshot is frozen here, so it will always see v1.
+	longReader := s.Begin()
+	beforeRead, _ := longReader.Get("x")
+
+	// newer writers commit v2 and v3. these commit after the long reader began,
+	// so they are invisible to it, but they pile up in the chain.
+	g2 := s.Begin()
+	g2.Set("x", "v2")
+	_ = g2.Commit()
+
+	g3 := s.Begin()
+	g3.Set("x", "v3")
+	_ = g3.Commit()
+
+	versionsBefore := len(s.storage["x"])
+	txnsBefore := len(s.txns)
+
+	s.GC()
+
+	versionsAfter := len(s.storage["x"])
+	txnsAfter := len(s.txns)
+
+	// the long reader must STILL read v1, GC kept its floor version.
+	afterRead, _ := longReader.Get("x")
+
+	fmt.Printf("gc: long reader read %s before and %s after gc (must be v1 both)\n", beforeRead, afterRead)
+	fmt.Printf("gc: versions of x %d -> %d, txns in registry %d -> %d (v0 and its txn reclaimed)\n",
+		versionsBefore, versionsAfter, txnsBefore, txnsAfter)
+}
