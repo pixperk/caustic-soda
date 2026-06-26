@@ -63,6 +63,11 @@ func (txn *Txn) Get(k string) (string, bool) {
 		return "", false
 	}
 
+	//detection point 1: draw rw-edges for any concurrent committed writer of a
+	//version newer than our snapshot. only sets flags; the abort happens later
+	//at this txn's own commit via errOnSSIConflict.
+	txn.setReadConflictFlags(value)
+
 	for i := len(value) - 1; i >= 0; i-- {
 		if txn.visible(value[i]) {
 			if value[i].deleted {
@@ -194,4 +199,27 @@ func (txn *Txn) errOnSSIConflict() error {
 	}
 
 	return nil
+}
+
+// setReadConflictFlags is detection point 1: when this txn reads a key, any
+// concurrent committed writer of a version we cannot see (committed after our
+// snapshot) means our read is stale, giving an edge txn -rw-> writer. we set
+// our outConflict and the writer's inConflict.
+//
+// the concurrency check is implied: we are an active reader (CommitTS == 0), so
+// a writer with CommitTS > our snapshot necessarily overlapped our lifetime.
+func (txn *Txn) setReadConflictFlags(versions Value) {
+	for _, v := range versions {
+		if v.created_by == txn.ID {
+			continue
+		}
+		writer, ok := txn.store.txns[v.created_by]
+		if !ok || writer == nil || writer.State != Committed {
+			continue
+		}
+		if writer.CommitTS > txn.Snapshot {
+			txn.outConflict = true
+			writer.inConflict = true
+		}
+	}
 }
